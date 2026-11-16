@@ -59,6 +59,7 @@
           <li><a href="#notes">Notes</a></li>
           <li><a href="#queue">Queue</a></li>
           <li><a href="#ask">Asking a session</a></li>
+          <li><a href="#board">Board</a></li>
           <li><a href="#web">Web cockpit</a></li>
         </ol>
       </div>
@@ -149,6 +150,7 @@ cicoria -version                     <span class="c"># which version this is</sp
           <tr><td>tab</td><td>Go to the other pane of the split</td></tr>
           <tr><td>w</td><td>Open another saved workspace in place of this one</td></tr>
           <tr><td>o</td><td>Worktrees: list them, open a session or a shell in one, or remove it</td></tr>
+          <tr><td>0</td><td>Board: the backlog, and every session by what it needs</td></tr>
           <tr><td>v</td><td>Web cockpit: share sessions with a phone or a browser</td></tr>
           <tr><td>s f g</td><td>Focus the sessions, files, changes panel</td></tr>
           <tr><td>l</td><td>Focus the commits panel</td></tr>
@@ -341,6 +343,42 @@ Update the client to handle it.</pre>
       <p>Only the turn the question starts counts. When another message was taken first, which is how an interrupted turn shows, or the turn ends on an error, or the agent says nothing, no answer goes back and the status bar says so. Claude Code names the message a turn is for, which settles this exactly. A question still being answered when cicoria closes is lost.</p>
     </section>
 
+    <section id="board">
+      <h2>Board</h2>
+      <p><kbd>ctrl+a</kbd> <kbd>0</kbd> shows the board on the whole screen: the backlog, then every session in the column of what it needs from you.</p>
+      <div class="table"><table>
+        <thead><tr><th>Column</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td>Backlog</td><td>Cards you wrote for work not started yet, in the order you give them</td></tr>
+          <tr><td>▲ Needs you</td><td>Sessions whose agent asks a question or a permission, or could not start</td></tr>
+          <tr><td>● Working</td><td>Sessions whose agent is at work</td></tr>
+          <tr><td>✓ To review</td><td>Idle sessions with something to look at: a turn that ended while you were elsewhere, changes or commits since they started, or notes not sent</td></tr>
+          <tr><td>○ Settled</td><td>The others: idle with nothing new, or exited</td></tr>
+        </tbody>
+      </table></div>
+      <p>Where a session is follows from its state, so it moves when that does. A card cannot be moved to another column, and the board never starts or sends anything by itself.</p>
+      <div class="table"><table>
+        <thead><tr><th>Key, on the board</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>h l, j k, g G</td><td>Go from column to column, from card to card, to the first and the last</td></tr>
+          <tr><td>a</td><td>Go to the next session that needs you</td></tr>
+          <tr><td>enter</td><td>On a session, go to it. On a card, start it</td></tr>
+          <tr><td>space</td><td>Show the end of the session's screen over the board</td></tr>
+          <tr><td>m d</td><td>Queue a message for the session; go to it with its changes panel</td></tr>
+          <tr><td>r x ,</td><td>Restart, close, rename the session</td></tr>
+          <tr><td>c e x</td><td>Write a card, rewrite it, delete it</td></tr>
+          <tr><td>J K</td><td>Move a card down, up</td></tr>
+          <tr><td>q esc</td><td>Back to the workspace, as <kbd>ctrl+a</kbd> <kbd>0</kbd> is</td></tr>
+        </tbody>
+      </table></div>
+      <p>A card is written in <code>$VISUAL</code> or <code>$EDITOR</code>: the first line is its title, and what follows is the first message its agent gets. A card of one line is its own message.</p>
+      <pre>Fix the login form
+
+The form sends the password twice. Look at api/auth.go,
+and add a test for it.</pre>
+      <p><kbd>enter</kbd> on a card starts it as <kbd>ctrl+a</kbd> <kbd>c</kbd> starts a session: the agent, then the directory, offering the one the card was written in, then, in a git repository, whether to give it a worktree of its own, even when no other session works there, with <kbd>enter</kbd> taking it, then a name made from the title. The board stays on screen, with the cursor on the new session, and the card leaves the backlog; its agent gets the text once it says it is ready. Giving up on the way keeps the card. The backlog is saved with the workspace.</p>
+    </section>
+
     <section id="web">
       <h2>Web cockpit</h2>
       <p><kbd>ctrl+a</kbd> <kbd>v</kbd> starts a web server inside cicoria and shows its link as a QR code, drawn in the terminal: point a phone at it and the page opens. The page shows only the sessions you share. The session on screen is shared when the cockpit starts.</p>
@@ -349,11 +387,13 @@ Update the client to handle it.</pre>
         <tbody>
           <tr><td>j k</td><td>Move between the sessions</td></tr>
           <tr><td>space</td><td>Share the session, or stop sharing it. Shared sessions are marked <code>↗</code> in the sessions panel</td></tr>
+          <tr><td>w</td><td>Share the session to watch only, or give the page control of it again. The page can read a session shared to watch and queue messages for it, but not answer it, send it a message at once or interrupt it; it is marked <code>[w]</code></td></tr>
           <tr><td>x</td><td>Stop the cockpit: the link stops working and no session is shared</td></tr>
           <tr><td>esc q</td><td>Close the box; the cockpit keeps running and the status bar says <code>web</code></td></tr>
         </tbody>
       </table></div>
-      <p>The page lists the shared sessions with their status, and for each one shows what its agent said at the end of the last turn (Claude Code and Codex CLI), the text of its screen while you look at it, its changes with their diffs, and its queue. From there you can send a message now or queue it, and press the keys that answer an agent: <kbd>y</kbd> <kbd>n</kbd> <kbd>1</kbd>-<kbd>3</kbd> <kbd>esc</kbd> <kbd>enter</kbd>, the arrows and <kbd>tab</kbd>. The status bar of cicoria says when a message came from the web. Sessions are not created, closed or restarted from the page, and an agent that is not running can only be queued for.</p>
+      <p>The page opens on the sessions that need you, the one that has waited longest first, each with what it asks in one line, then the other columns of the board: those at work with what they are doing, those to review with why, and the settled ones. Each row names its worktree and branch. Board shows the columns as a board, a card for each session: side by side on a wide screen, and on a phone one column at a time, picked from four segments at the top, each with the count of its column. Pressed again, it goes back to where you were. A session's page shows what it asks while it needs input: the agent's words, the tool it wants to use, such as the command it would run, with the directory it works in (Claude Code, Copilot CLI and Codex CLI), and the choices of the menu the agent draws, read from its screen. You answer with one of the choices, in words: cicoria reads the screen again before it acts and refuses if the question is not the same, then moves the agent's cursor onto the choice and takes it. A choice that asks you to tell the agent what to do instead opens a box for it, sent once the answer is taken. A question without a menu is answered in your own words. Then come what it said at the end of its last turn (Claude Code and Codex CLI), its queue, where each message can be taken back, and its screen, live, without frames, spinners and marks unless you switch on its exact layout; on a phone the screen is folded while the agent asks. Its changes, since the session started or not committed yet, with the diff of each file and its line numbers, follow the agent as it works: beside the rest on a wide screen, a page away on a phone. From the page you can also send a message now or queue it, and interrupt the agent's turn once you confirm it. While the agent shows a menu, a message is not sent at once, since it could pick a choice: answer first, or queue it. Each thing done gets a receipt in words: what cicoria did, or why it did not. The status bar of cicoria says when something came from the web. Sessions are not created, closed or restarted from the page, and an agent that is not running can only be queued for.</p>
+      <p>The page is made to be used with a screen reader as with a mouse: it is plain HTML with a heading for each session, a change of status is announced once, with what the session asks when it starts to need you, the page changes only what changed so that focus stays where it was, the screen of the agent is not redrawn while the reader is in it, the choices of a question are a group of radio buttons, and the lines of a diff say whether they were added or removed. The tab title names the session open and counts the sessions that need you. Its fonts are part of cicoria: the page loads nothing from elsewhere.</p>
       <p>The workspace stays the only owner of the sessions: it hands the server a snapshot of the shared sessions every half second and after each hook event, streamed to the page as server-sent events, and what the page asks comes back to it as a message, the way hook events do. Diffs are only given for the files git lists as changed.</p>
       <p>By default the cockpit listens on every address of the machine, on a free port, so a phone on the same network can open it. The link names the address of the interface traffic goes out from, not that of a bridge of containers. Set <code>web_address</code> to change it: <code>"127.0.0.1:0"</code> keeps it to this machine, the address of a VPN like Tailscale to your devices, and a fixed port like <code>"0.0.0.0:7777"</code> keeps the link's address the same between starts. The link carries a 128-bit token that is new each time the cockpit starts. The page keeps it for its tab and sends it as a header, never as a cookie, which the browser would also hand to the other ports of the host; everything but the page itself needs it. The server speaks plain HTTP: across a network you do not trust, use a VPN or put HTTPS in front, like <code>tailscale serve</code>.</p>
     </section>

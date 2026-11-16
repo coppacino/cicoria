@@ -45,6 +45,12 @@ while read -r cmd arg; do
   case "$cmd" in
     work) hook '{"hook_event_name":"UserPromptSubmit"}' ;;
     ask)  hook '{"hook_event_name":"Notification","notification_type":"permission_prompt"}' ;;
+    menu) hook '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm build"}}'
+          printf 'Do you want to proceed?\n\342\235\257 1. Yes\n  2. No, and tell me what to do (esc)\n'
+          hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"May I run Bash?"}'
+          read -r ans
+          printf 'answer %s\n' "$ans" | cat -v
+          hook '{"hook_event_name":"PostToolUse"}' ;;
     stop) hook '{"hook_event_name":"Stop"}' ;;
     reply) hook "{\"hook_event_name\":\"Stop\",\"last_assistant_message\":\"$arg\"}" ;;
     fail) hook '{"hook_event_name":"StopFailure"}' ;;
@@ -2547,7 +2553,7 @@ func TestWebCockpit(t *testing.T) {
 		t.Fatalf("no event had %q", wants)
 		return ""
 	}
-	post := func(kind, body string) {
+	ask := func(kind, body string) int {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodPost, base+"/api/sessions/"+id+"/"+kind, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -2556,8 +2562,12 @@ func TestWebCockpit(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = r.Body.Close()
-		if r.StatusCode != http.StatusNoContent {
-			t.Fatalf("%s: %s", kind, r.Status)
+		return r.StatusCode
+	}
+	post := func(kind, body string) {
+		t.Helper()
+		if code := ask(kind, body); code != http.StatusNoContent {
+			t.Fatalf("%s: %d", kind, code)
 		}
 	}
 	snapshot(`"name":"claude-1"`, `"status":"idle"`)
@@ -2571,6 +2581,51 @@ func TestWebCockpit(t *testing.T) {
 	post("send", `{"text":"reply all-done"}`)
 	snapshot(`"answer":"all-done"`, `"status":"idle"`)
 
+	// A question drawn as a menu is answered with one of its choices, and
+	// only if it is still the one on the screen.
+	w.line("menu")
+	snapshot(`"status":"needs input"`, `"lane":"needs"`, `"question":"May I run Bash?"`, `"tool":{"name":"Bash","detail":"rm build"}`,
+		`"prompt":"Do you want to proceed?"`, `"choices":["Yes","No, and tell me what to do"]`)
+	if code := ask("choose", `{"text":"Maybe","index":1}`); code != http.StatusConflict {
+		t.Errorf("a choice not on the screen: %d", code)
+	}
+	// A message typed into the menu could pick a choice: it waits for the
+	// answer.
+	if code := ask("send", `{"text":"hello"}`); code != http.StatusConflict {
+		t.Errorf("send while a menu is on the screen: %d", code)
+	}
+	post("choose", `{"text":"No, and tell me what to do","index":1}`)
+	w.see("answer ^[[B")
+	snapshot(`"status":"working"`)
+	w.line("stop")
+	snapshot(`"status":"idle"`)
+
+	// A session shared to watch takes no message at once, nor keys: only
+	// what is queued.
+	w.prefix('v')
+	w.see("Web cockpit")
+	w.typeText("w")
+	w.see("[w]")
+	snapshot(`"control":false`)
+	if code := ask("send", `{"text":"hello"}`); code != http.StatusForbidden {
+		t.Errorf("send while watching: %d", code)
+	}
+	if code := ask("interrupt", ``); code != http.StatusForbidden {
+		t.Errorf("interrupt while watching: %d", code)
+	}
+
+	// A queued message can be taken back from the page.
+	w.typeText("q")
+	w.gone("Web cockpit")
+	// Nothing is sent to an agent that needs input, so the message waits.
+	w.line("ask")
+	snapshot(`"status":"needs input"`)
+	post("queue", `{"text":"later please"}`)
+	snapshot(`"queue":["later please"]`)
+	post("unqueue", `{"text":"later please","index":0}`)
+	snapshot(`"queue":[]`)
+	w.see("taken back from claude-1")
+
 	// Stopping the cockpit takes the link with it.
 	w.prefix('v')
 	w.see("Web cockpit")
@@ -2579,5 +2634,284 @@ func TestWebCockpit(t *testing.T) {
 	if r, err := http.Get(base + "/"); err == nil {
 		_ = r.Body.Close()
 		t.Errorf("the cockpit still answers: %s", r.Status)
+	}
+}
+
+// TestBoard writes cards in the backlog, starts one as a session, and shows
+// the sessions in the columns of what they need.
+func TestBoard(t *testing.T) {
+	w := newWorkspace(t)
+	// The editor writes in the card what the test put in next.txt.
+	next := filepath.Join(filepath.Dir(w.dir), "next.txt")
+	editor := filepath.Join(filepath.Dir(w.dir), "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\ncat "+next+" > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.env = append(w.env, "VISUAL="+editor)
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(next, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.launch(140, 40)
+	w.see("claude-1 · claude · idle")
+
+	w.prefix('0')
+	w.see("Backlog (0)", "c writes a card", "○ Settled (1)", "claude-1")
+
+	// A card is written in the editor: its title, then its prompt.
+	write("Write the docs!\n\nhello from-card\n")
+	w.typeText("c")
+	w.see("Backlog (1)", "□ Write the docs!", "hello from-card")
+	write("Second card\n")
+	w.typeText("c")
+	w.see("Backlog (2)", "□ Second card")
+	// Emptied, a card is kept as it was.
+	write("")
+	w.typeText("e")
+	w.see("kept as it was", "□ Second card")
+	// The order is the user's.
+	above := func(a, b string) bool {
+		_, ya := w.at(a)
+		_, yb := w.at(b)
+		return ya < yb
+	}
+	order := func(first, second string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !above(first, second) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%q never came above %q:\n%s", first, second, w.tm.String())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	w.typeText("K")
+	order("Second card", "Write the docs!")
+	w.typeText("J")
+	order("Write the docs!", "Second card")
+	w.typeText("g")
+
+	// The backlog comes back with the workspace, and nothing starts by
+	// itself.
+	w.typeText("q")
+	w.quit()
+	w.launch(140, 40)
+	w.see("claude-1 · claude · idle")
+	w.prefix('0')
+	w.see("Backlog (2)", "□ Write the docs!", "□ Second card")
+	if strings.Count(w.tm.String(), "claude") > 2 {
+		t.Fatalf("a session was started from a card:\n%s", w.tm.String())
+	}
+
+	// Started, a card becomes a session, named after it, whose agent gets
+	// its prompt once it says it is ready.
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("agent for Write the docs! ›")
+	w.typeText("claude")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("claude in directory: ")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	// For a card, enter takes the worktree.
+	w.see("claude-1 already works in this repository: give this session a worktree of its own? [Y/n]")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("session name: write-the-docs")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	// The board stays, the card left the backlog, and the cursor is on its
+	// session, at work.
+	w.see("started write-the-docs", "Backlog (1)", "● Working (1)", "write-the-docs", "claude · wt", "○ Settled (1)")
+	w.gone("□ Write the docs!")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("write-the-docs · claude", "orktrees/write-the-docs", "got hello from-card")
+
+	// A session that asks for something needs the user; one that ended its
+	// turn while the user was away is to review.
+	w.line("ask")
+	w.see("write-the-docs · claude · needs input")
+	w.prefix('0')
+	w.see("▲ Needs you (1)", "1 wait for you")
+	w.prefix('1')
+	w.line("edit notes.txt")
+	w.line("stop")
+	w.see("claude-1 · claude · idle", "notes.txt")
+	w.prefix('0')
+	w.see("✓ To review (1)", "1 file", "▲ Needs you (1)", "2 wait for you")
+
+	// space shows the end of its screen over the board.
+	w.typeText(" ")
+	w.see("write-the-docs · claude · any key closes", "got hello from-card")
+	w.typeText("j")
+	w.gone("any key closes")
+
+	// enter goes to the session under the cursor, which starts on what
+	// needs the user.
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("write-the-docs · claude · needs input")
+	w.gone("Backlog (")
+
+	// A card goes when the user says so.
+	w.prefix('0')
+	w.typeText("h")
+	w.typeText("x")
+	w.see("delete the card Second card?")
+	w.typeText("y")
+	w.see("Backlog (0)")
+	w.prefix('0')
+	w.gone("Backlog (")
+}
+
+// TestBoardNarrow shows the columns of a narrow board one under the other.
+func TestBoardNarrow(t *testing.T) {
+	w := newWorkspace(t)
+	w.launch(80, 24)
+	w.see("agent ready")
+	// The board is opened once the agent is idle: had it stopped while the
+	// board was open, it would be waiting to be reviewed.
+	w.title("claude-1 · idle · cicoria")
+	w.prefix('0')
+	w.see("── Backlog (0)", "── ○ Settled (1)", "○ claude-1")
+	if strings.Contains(w.tm.String(), "Working (") {
+		t.Fatalf("an empty column is listed:\n%s", w.tm.String())
+	}
+	// The lanes that are not listed are skipped: from the backlog, the next
+	// one is the session's.
+	w.see("h/l column · c new card")
+	w.typeText("l")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.gone("── Backlog")
+}
+
+// TestBoardCardForQuietAgent starts a card with an agent that says nothing
+// when it starts: it gets the prompt once its screen is quiet.
+func TestBoardCardForQuietAgent(t *testing.T) {
+	w := newWorkspace(t)
+	editor := filepath.Join(filepath.Dir(w.dir), "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf 'quiet\\n\\nhowdy partner\\n' > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.env = append(w.env, "VISUAL="+editor)
+	w.launch(140, 40)
+	w.see("claude-1 · claude · idle")
+	w.prefix('0')
+	w.typeText("c")
+	w.see("□ quiet", "howdy partner")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("agent for quiet ›")
+	w.typeText("copilot")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("copilot in directory: ")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("give this session a worktree of its own?")
+	w.typeText("n")
+	w.see("session name: quiet")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("started quiet", "● Working (1)")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("copilot ready", "got howdy")
+}
+
+// TestBoardCardGivenUp gives up on starting a card at each step, which
+// keeps it, then starts it with an agent that cannot start: its session
+// keeps the prompt, and needs the user.
+func TestBoardCardGivenUp(t *testing.T) {
+	w := newWorkspace(t)
+	editor := filepath.Join(filepath.Dir(w.dir), "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf 'keep me\\n' > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.env = append(w.env, "VISUAL="+editor)
+	config := filepath.Join(filepath.Dir(w.dir), "config.toml")
+	f, err := os.OpenFile(config, os.O_APPEND|os.O_WRONLY, 0)
+	if err == nil {
+		_, err = f.WriteString("\n[agents.broken]\ncommand = [\"" + filepath.Join(w.dir, "no-such-agent") + "\"]\n")
+		_ = f.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.launch(140, 40)
+	w.see("claude-1 · claude · idle")
+	w.prefix('0')
+	w.typeText("c")
+	w.see("Backlog (1)", "□ keep me")
+	// What was asked goes, before the next key: esc and enter close
+	// together read as alt+enter.
+	esc := func(asked string) {
+		t.Helper()
+		w.tm.SendKey(uv.Key{Code: uv.KeyEscape})
+		w.gone(asked)
+		w.see("Backlog (1)", "□ keep me")
+	}
+	pick := func(agent string) {
+		t.Helper()
+		w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+		w.see("agent for keep me ›")
+		w.typeText(agent)
+		w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+		w.see(agent + " in directory: ")
+	}
+
+	// At the agent, the directory, the worktree question and the name.
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("agent for keep me ›")
+	esc("agent for keep me ›")
+	pick("claude")
+	esc("claude in directory: ")
+	pick("claude")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("give this session a worktree of its own?")
+	esc("give this session a worktree of its own?")
+	pick("claude")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("give this session a worktree of its own?")
+	w.typeText("n")
+	w.see("session name: keep-me")
+	esc("session name: keep-me")
+
+	pick("broken")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("give this session a worktree of its own?")
+	w.typeText("n")
+	w.see("session name: keep-me")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("Backlog (0)", "▲ Needs you (1)", "keep-me", "⋯1", "could not start")
+}
+
+// TestBoardCardAlone offers the session of a card a worktree even when no
+// other session works in the repository.
+func TestBoardCardAlone(t *testing.T) {
+	w := newWorkspace(t)
+	editor := filepath.Join(filepath.Dir(w.dir), "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf 'alone\\n' > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.env = append(w.env, "VISUAL="+editor)
+	w.launch(140, 40)
+	w.see("claude-1 · claude · idle")
+	w.prefix('x')
+	w.see("close claude-1 and stop its agent?")
+	w.typeText("y")
+	w.see("no sessions")
+
+	w.prefix('0')
+	w.typeText("c")
+	w.see("□ alone")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("agent for alone ›")
+	w.typeText("claude")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("claude in directory: ")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("give this session a worktree of its own? [Y/n]")
+	if strings.Contains(w.tm.String(), "already works") {
+		t.Fatalf("no session works in the repository:\n%s", w.tm.String())
+	}
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("session name: alone")
+	w.tm.SendKey(uv.Key{Code: uv.KeyEnter})
+	w.see("started alone", "claude · wt")
+	if _, err := os.Stat(filepath.Join(w.dir+".worktrees", "alone", "main.go")); err != nil {
+		t.Fatal(err)
 	}
 }
