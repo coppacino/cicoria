@@ -174,6 +174,15 @@ type Model struct {
 	board board
 	// timeline is what the timeline shows.
 	timeline timeline
+
+	// runs are the commands of the run box still running, lastRun the
+	// one whose output ctrl+a . shows, and runHistory the command lines
+	// run, the last first.
+	runs       []*run
+	lastRun    *run
+	runHistory []string
+	// leftBehind are the commands that ended but left processes running.
+	leftBehind []*run
 	// commandFrom is what was on screen when the command that runs was
 	// asked for, before it went back to the workspace.
 	commandFrom mode
@@ -213,6 +222,35 @@ type prompt struct {
 	complete func(string) string
 	// done receives the text when the user confirms it.
 	done func(string) tea.Cmd
+	// history, when set, is what up and down go through, the last first;
+	// hist is the entry shown, -1 for what is being typed, kept in draft.
+	history []string
+	hist    int
+	draft   string
+}
+
+// step shows the entry of the history before (back) or after the one shown.
+// Past the newest, what was being typed comes back.
+func (p *prompt) step(back bool) {
+	if len(p.history) == 0 {
+		return
+	}
+	if p.hist == -1 {
+		p.draft = p.input.Value()
+	}
+	switch {
+	case back && p.hist < len(p.history)-1:
+		p.hist++
+	case !back && p.hist >= 0:
+		p.hist--
+	default:
+		return
+	}
+	if p.hist == -1 {
+		p.input.Set(p.draft)
+		return
+	}
+	p.input.Set(p.history[p.hist])
 }
 
 // confirm is a yes/no question waiting for an answer.
@@ -384,6 +422,7 @@ func New(cfg config.Config, dir string, dark, agreed bool) (*Model, error) {
 	m.active = max(min(st.Active, len(m.sessions)-1), 0)
 	m.sessionCursor = m.active
 	m.cards = st.Cards
+	m.runHistory = st.Runs
 
 	return m, nil
 }
@@ -507,7 +546,7 @@ func (m *Model) say(msg string) {
 
 // save remembers the sessions for the next run.
 func (m *Model) save() {
-	st := session.State{Dir: m.dir, Cards: m.cards}
+	st := session.State{Dir: m.dir, Cards: m.cards, Runs: m.runHistory}
 	for i, s := range m.sessions {
 		// The setup of a worktree is not run again: it ended with cicoria.
 		if s.Setup {
@@ -532,6 +571,8 @@ func (m *Model) Close() error {
 	if !m.declined {
 		m.save()
 	}
+	// Nothing runs without cicoria.
+	m.stopRuns()
 	// Each agent is given a moment to end: all of them at once. One of a
 	// session closed just before is waited for as well.
 	var stopping sync.WaitGroup
@@ -678,7 +719,7 @@ func (m *Model) startAll() tea.Cmd {
 func (m *Model) start(s *session.Session) tea.Cmd {
 	pane := m.pane(s)
 	m.track(s)
-	err := s.Start(agent.LaunchOpts{Self: m.self, Socket: m.ipc.Path()}, pane.w, pane.h)
+	err := s.Start(agent.LaunchOpts{Self: m.self, Socket: m.ipc.Path(), Messages: m.cfg.AgentMessages}, pane.w, pane.h)
 	if err != nil {
 		m.say(err.Error())
 		return nil
@@ -850,6 +891,16 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			m.say("removed the worktree " + tilde(msg.path))
 		}
 
+	case runDoneMsg:
+		return m.runDone(msg.r)
+
+	case runTickMsg:
+		if m.mode == modeView && m.view.output == msg.r && m.view.outputOpen == msg.open {
+			m.showOutput(msg.r)
+			return m.tickOutput(msg.r)
+		}
+		return nil
+
 	case editorMsg:
 		if msg.err != nil {
 			m.say("editor: " + msg.err.Error())
@@ -885,6 +936,16 @@ func (m *Model) seen() {
 }
 
 func (m *Model) handleHook(ev ipc.Event) tea.Cmd {
+	if ev.Call != nil {
+		// The agent was told the call failed: doing it now would surprise it.
+		if ev.Expired(time.Now()) {
+			m.say("a call from an agent came too late and was dropped")
+			return nil
+		}
+		r, cmd := m.handleCall(ev.Session, *ev.Call)
+		ev.Answer(r)
+		return cmd
+	}
 	s, i := m.byID(ev.Session)
 	if s == nil {
 		return nil

@@ -222,14 +222,16 @@ func (m *Model) timelineData(now time.Time) (ui.Timeline, []lane, []entry) {
 		byID[e.S] = append(byID[e.S], e)
 	}
 	ids := []string{}
+	var shells []string
 	for _, s := range m.sessions {
-		ids = append(ids, s.ID)
-	}
-	for id, evs := range byID {
-		if !slices.Contains(ids, id) && !evs[len(evs)-1].T.Before(from) {
-			ids = append(ids, id)
+		if isShell(s.Adapter) {
+			shells = append(shells, s.ID)
+		} else {
+			ids = append(ids, s.ID)
 		}
 	}
+	// What a shell left in the history before it was kept out stays out.
+	ids = append(ids, closedIDs(byID, slices.Concat(ids, shells), from)...)
 
 	width := 0
 	for _, id := range ids {
@@ -268,6 +270,26 @@ func (m *Model) timelineData(now time.Time) (ui.Timeline, []lane, []entry) {
 	}
 	slices.SortStableFunc(log, func(a, b entry) int { return b.at.Compare(a.at) })
 	return t, lanes, append(nowLines(lanes, now), log...)
+}
+
+// closedIDs returns the sessions of the history that are not live and did
+// something since from, the last closed first. The order is the same at
+// every redraw, so their bars stay where they are.
+func closedIDs(byID map[string][]session.Event, live []string, from time.Time) []string {
+	var ids []string
+	for id, evs := range byID {
+		if !slices.Contains(live, id) && !evs[len(evs)-1].T.Before(from) {
+			ids = append(ids, id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int {
+		ea, eb := byID[a], byID[b]
+		if c := eb[len(eb)-1].T.Compare(ea[len(ea)-1].T); c != 0 {
+			return c
+		}
+		return strings.Compare(a, b)
+	})
+	return ids
 }
 
 // layOut returns where the bars start and how long a cell lasts, for the
@@ -676,16 +698,27 @@ func (m *Model) timelineHeader(t ui.Timeline, lanes []lane, now time.Time) strin
 // timelineLegend is the rule under the timeline, with what the bars and
 // the marks of the lines mean, as much of it as fits.
 func (m *Model) timelineLegend() string {
-	legend := " ▄ working █ waits for you ─ idle ✓ done ✕ failed ~ guessed · › message ↵ answer ? ask □ card ◆ commit "
+	// The blocks are in their colours, the rest faint.
+	states := func(waits string) string {
+		var b strings.Builder
+		for _, s := range []struct {
+			state ui.State
+			label string
+		}{{ui.StateWorking, "working"}, {ui.StateWaiting, waits}, {ui.StateIdle, "idle"}, {ui.StateDone, "done"}, {ui.StateFailed, "failed"}} {
+			b.WriteString(" " + ui.StateMark(s.state) + ui.Dim.Render(" "+s.label))
+		}
+		return b.String()
+	}
+	legend := states("waits for you") + ui.Dim.Render(" ~ guessed · › message ↵ answer ? ask □ card ◆ commit ")
 	w := ansi.StringWidth(legend)
 	if w+4 > m.width {
-		legend = " ▄ working █ waits ─ idle ✓ done ✕ failed "
+		legend = states("waits") + " "
 		w = ansi.StringWidth(legend)
 	}
 	if w+4 > m.width {
 		return ui.Dim.Render(strings.Repeat("─", max(m.width, 0)))
 	}
-	return ui.Dim.Render("──" + legend + strings.Repeat("─", m.width-w-2))
+	return ui.Dim.Render("──") + legend + ui.Dim.Render(strings.Repeat("─", m.width-w-2))
 }
 
 // statusGlyph is the status mark of a session without its colour.

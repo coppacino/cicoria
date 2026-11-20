@@ -42,7 +42,11 @@ const (
 	fromNotes  = "notes"
 	fromAsk    = "ask"
 	fromAnswer = "answer"
-	fromCard   = "card"
+	// fromAgent and fromAgentAsk are a message and a question the agent of
+	// another session sent.
+	fromAgent    = "agent"
+	fromAgentAsk = "agent-ask"
+	fromCard     = "card"
 )
 
 // openHistory reads the history of the workspace, after making room in it
@@ -80,6 +84,11 @@ func (m *Model) beginRun() {
 
 // track has a session tell the history when its status changes.
 func (m *Model) track(s *session.Session) {
+	// A shell is a way to run a command, not a session at work: the
+	// timeline has nothing to say of it.
+	if isShell(s.Adapter) {
+		return
+	}
 	s.OnStatus = func(s *session.Session) {
 		m.history.Status(s.ID, s.Status.String(), !s.Adapter.ReportsStatus(), s.Since)
 	}
@@ -88,6 +97,9 @@ func (m *Model) track(s *session.Session) {
 // record adds an event about a session to the history.
 func (m *Model) record(s *session.Session, e session.Event) {
 	if s != nil {
+		if isShell(s.Adapter) {
+			return
+		}
 		e.S = s.ID
 	}
 	m.history.Record(e)

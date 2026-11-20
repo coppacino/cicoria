@@ -174,7 +174,7 @@ func TestTimelineRenders(t *testing.T) {
 	m.openTimeline()
 	out := ansi.Strip(strings.Join(m.renderTimeline(), "\n"))
 	t.Log("\n" + out)
-	for _, want := range []string{"api", "docs", "█", "✓", "agents waited for you 15m", "now", "answered “Yes” · it waited 15m", "queued “add pagination”", "closed it", "typed “fix it” → done in 14m, 1 file"} {
+	for _, want := range []string{"api", "docs", "█", "█ working", "agents waited for you 15m", "now", "answered “Yes” · it waited 15m", "queued “add pagination”", "closed it", "typed “fix it” → done in 14m, 1 file"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the timeline does not show %q", want)
 		}
@@ -509,5 +509,56 @@ func TestSecondCicoriaRecordsNothingYet(t *testing.T) {
 	m.beginRun()
 	if got := m.history.Events(); len(got) != 1 || got[0].K != session.KindRunStart {
 		t.Errorf("once agreed: %+v", got)
+	}
+}
+
+// TestClosedLanesKeepTheirOrder checks that the bars of closed sessions are
+// in the same order at every redraw, the last closed first, and not in the
+// order of a map, which changes each time and makes them flicker.
+func TestClosedLanesKeepTheirOrder(t *testing.T) {
+	at := time.Date(2026, 11, 20, 10, 6, 0, 0, time.UTC)
+	byID := map[string][]session.Event{
+		"live":   {{S: "live", T: at}},
+		"old":    {{S: "old", T: at.Add(-2 * time.Hour)}},
+		"shell":  {{S: "shell", T: at}},
+		"pack":   {{S: "pack", T: at}},
+		"stiggy": {{S: "stiggy", T: at.Add(time.Second)}},
+	}
+	want := []string{"stiggy", "pack", "shell"}
+	for range 50 {
+		if got := closedIDs(byID, []string{"live"}, at.Add(-time.Hour)); !slices.Equal(got, want) {
+			t.Fatalf("closedIDs = %v, want %v", got, want)
+		}
+	}
+}
+
+// A shell is a way to run a command, not a session at work: the timeline
+// neither records nor shows it.
+func TestShellNotInTimeline(t *testing.T) {
+	m, api := historyModel(t)
+	sh := session.New("s9", "shell-1", m.dir, agent.NewGeneric(config.Shell, []string{"sh"}))
+	m.sessions = append(m.sessions, sh)
+	m.track(sh)
+
+	before := len(m.history.Events())
+	m.record(sh, session.Event{K: session.KindSessionOpen, V: sh.Name})
+	m.enqueueFrom(sh, session.Message{Text: "ls"}, session.FromTUI)
+	if sh.OnStatus != nil {
+		t.Error("the status of a shell is recorded")
+	}
+	if got := m.history.Events()[before:]; len(got) != 0 {
+		t.Errorf("a shell was recorded: %+v", got)
+	}
+
+	m.enqueueFrom(api, session.Message{Text: "add tests"}, session.FromTUI)
+	m.width, m.height = 120, 30
+	_, lanes, _ := m.timelineData(time.Now())
+	for _, l := range lanes {
+		if l.id == sh.ID {
+			t.Error("the shell has a lane")
+		}
+	}
+	if len(lanes) != 1 || lanes[0].id != api.ID {
+		t.Errorf("lanes = %d", len(lanes))
 	}
 }
