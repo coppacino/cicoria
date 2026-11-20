@@ -65,6 +65,7 @@ func init() {
 		{"w", "Open another workspace…", (*Model).askWorkspace, false},
 		{"o", "Worktrees: open a session in one, or remove it…", (*Model).askWorktrees, false},
 		{"0", "Board: the backlog, and every session by what it needs", (*Model).openBoard, false},
+		{"e", "Timeline: what happened, and what you did", (*Model).openTimeline, false},
 		{"v", "Web cockpit: share sessions with a phone or a browser…", (*Model).askWeb, false},
 		{"s", "Focus sessions", func(m *Model) tea.Cmd { return m.setFocus(focusSessions) }, false},
 		{"f", "Focus files", func(m *Model) tea.Cmd { return m.setFocus(focusFiles) }, false},
@@ -115,7 +116,13 @@ func (m *Model) runPrefix(k tea.KeyPressMsg) tea.Cmd {
 // full-screen view it is for the session on screen, and the view stays when
 // the command keeps it; otherwise the workspace comes back first.
 func (m *Model) runCommand(keepsView bool, run func(m *Model) tea.Cmd) tea.Cmd {
-	// From the board, every command is one of the workspace.
+	m.commandFrom = m.mode
+	defer func() { m.commandFrom = modeWorkspace }()
+	// From the board and the timeline, every command is one of the
+	// workspace.
+	if m.mode == modeTimeline {
+		m.closeTimeline()
+	}
 	if m.mode == modeBoard {
 		m.closeBoard()
 	}
@@ -131,7 +138,7 @@ func (m *Model) runCommand(keepsView bool, run func(m *Model) tea.Cmd) tea.Cmd {
 
 // closeView goes back from the full-screen view to the workspace.
 func (m *Model) closeView() {
-	m.mode = modeWorkspace
+	m.mode, m.view.back = modeWorkspace, modeWorkspace
 	m.seen()
 }
 
@@ -342,9 +349,14 @@ func (m *Model) newSession(a agent.Adapter, name, dir string, worktree bool, car
 	s.Port = m.freePorts()
 	s.Base, _ = git.Head(dir)
 	s.Uncommitted = m.cfg.Changes != config.ChangesSession
+	m.record(s, session.Event{K: session.KindSessionOpen, V: name, Src: session.FromTUI})
+	if made != "" {
+		m.record(s, session.Event{K: session.KindWorktreeAdd, V: made, Src: session.FromTUI})
+	}
 	if card != nil {
 		// It goes out once the agent says it is ready for it.
-		s.Enqueue(session.Message{Text: card.Prompt})
+		m.recordText(s, session.Event{K: session.KindCardStart, V: card.Title, Src: session.FromTUI}, card.Prompt)
+		s.Enqueue(session.Message{Text: card.Prompt, From: fromCard})
 		m.dropCard(card.ID)
 	}
 	m.sessions = append(m.sessions, s)
@@ -860,6 +872,7 @@ func (m *Model) askRename() tea.Cmd {
 	p.done = func(name string) tea.Cmd {
 		if s, _ := m.byID(id); s != nil && name != "" {
 			s.Name = name
+			m.record(s, session.Event{K: session.KindRename, V: name, Src: session.FromTUI})
 			m.save()
 		}
 		return nil
@@ -925,6 +938,7 @@ func (m *Model) closeSession(i int) tea.Cmd {
 	// looked at.
 	setups := m.setupsOf(closed)
 	for _, gone := range append(setups, closed) {
+		m.record(gone, session.Event{K: session.KindSessionClose, V: gone.Name, Src: session.FromTUI})
 		j := slices.Index(m.sessions, gone)
 		m.sessions = slices.Delete(m.sessions, j, j+1)
 		if m.active > j || m.active >= len(m.sessions) {

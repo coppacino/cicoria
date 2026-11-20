@@ -164,12 +164,16 @@ func (m *Model) View() tea.View {
 		rows = m.renderHelp()
 	case modeBoard:
 		rows = m.renderBoard()
+	case modeTimeline:
+		rows = m.renderTimeline()
 	default:
 		l := m.layout()
 		if m.mode == modePalette && m.paletteFrom == modeView {
 			rows = m.renderView()
 		} else if m.mode == modePalette && m.paletteFrom == modeBoard {
 			rows = m.renderBoard()
+		} else if m.mode == modePalette && m.paletteFrom == modeTimeline {
+			rows = m.renderTimeline()
 		} else {
 			rows = m.renderWorkspace(l)
 		}
@@ -622,6 +626,12 @@ func (m *Model) renderHelp() []string {
 		"    keep it: once its agent has ended, y removes it anyway when that loses",
 		"    changes or commits, and opens a shell there otherwise, to fix it.",
 		"",
+		ui.Bold.Render("  Timeline"),
+		"    "+p+" e shows a bar for each session, what its agent did over time; under",
+		"    it what needs you now, then what you did, newest first, and what came of",
+		"    it. j/k move, a the next session that waits, d the turn of the line,",
+		"    enter goes to its session, +/- a shorter or longer time.",
+		"",
 		ui.Bold.Render("  Workspaces"),
 		"    sessions are saved for the directory cicoria was opened on, wherever they",
 		"    work, and only come back when it is opened on that directory again.",
@@ -755,7 +765,8 @@ func (m *Model) renderStatus() string {
 		left = append(left, m.message)
 	}
 	for i, s := range m.sessions {
-		if s.Status == agent.NeedsInput && (i != m.active || under != modeWorkspace) {
+		// The timeline says it under its bars.
+		if s.Status == agent.NeedsInput && (i != m.active || under != modeWorkspace) && under != modeTimeline {
 			left = append(left, ui.Warn.Render("▲ "+s.Name+" needs input"))
 		}
 	}
@@ -778,6 +789,11 @@ func (m *Model) renderStatus() string {
 		right = "j/k space b g G scroll · any other key closes"
 	case modeWeb:
 		right = "j/k move · space share ⇄ stop sharing · x stop · esc back"
+	case modeTimeline:
+		right = m.timelineHint()
+		if m.mode == modePalette {
+			right = "esc back"
+		}
 	case modeBoard:
 		right = m.boardHint()
 		if m.board.peek {

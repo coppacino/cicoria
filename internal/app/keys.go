@@ -36,6 +36,7 @@ const wheelSlide = 8
 
 func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
+	m.noteKey(time.Now())
 
 	// Any key ends an animation. When something waits for its end, the key
 	// only brings that forward.
@@ -97,6 +98,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		return m.webKey(key)
 	case modeBoard:
 		return m.boardKey(k)
+	case modeTimeline:
+		return m.timelineKey(k)
 	case modePalette:
 		if key == "esc" {
 			m.mode, m.palette = m.paletteFrom, nil
@@ -368,7 +371,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	case modeBoard:
 		return m.boardMouse(msg)
-	case modePalette, modeWeb:
+	case modePalette, modeWeb, modeTimeline:
 		return nil
 	}
 

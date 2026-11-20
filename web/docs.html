@@ -60,6 +60,7 @@
           <li><a href="#queue">Queue</a></li>
           <li><a href="#ask">Asking a session</a></li>
           <li><a href="#board">Board</a></li>
+          <li><a href="#timeline">Timeline</a></li>
           <li><a href="#web">Web cockpit</a></li>
         </ol>
       </div>
@@ -151,6 +152,7 @@ cicoria -version                     <span class="c"># which version this is</sp
           <tr><td>w</td><td>Open another saved workspace in place of this one</td></tr>
           <tr><td>o</td><td>Worktrees: list them, open a session or a shell in one, or remove it</td></tr>
           <tr><td>0</td><td>Board: the backlog, and every session by what it needs</td></tr>
+          <tr><td>e</td><td>Timeline: what happened, and what you did</td></tr>
           <tr><td>v</td><td>Web cockpit: share sessions with a phone or a browser</td></tr>
           <tr><td>s f g</td><td>Focus the sessions, files, changes panel</td></tr>
           <tr><td>l</td><td>Focus the commits panel</td></tr>
@@ -364,7 +366,7 @@ Update the client to handle it.</pre>
           <tr><td>a</td><td>Go to the next session that needs you</td></tr>
           <tr><td>enter</td><td>On a session, go to it. On a card, start it</td></tr>
           <tr><td>space</td><td>Show the end of the session's screen over the board</td></tr>
-          <tr><td>m d</td><td>Queue a message for the session; go to it with its changes panel</td></tr>
+          <tr><td>m d e</td><td>Queue a message for the session; go to it with its changes panel; show its <a href="#timeline">timeline</a></td></tr>
           <tr><td>r x ,</td><td>Restart, close, rename the session</td></tr>
           <tr><td>c e x</td><td>Write a card, rewrite it, delete it</td></tr>
           <tr><td>J K</td><td>Move a card down, up</td></tr>
@@ -377,6 +379,44 @@ Update the client to handle it.</pre>
 The form sends the password twice. Look at api/auth.go,
 and add a test for it.</pre>
       <p><kbd>enter</kbd> on a card starts it as <kbd>ctrl+a</kbd> <kbd>c</kbd> starts a session: the agent, then the directory, offering the one the card was written in, then, in a git repository, whether to give it a worktree of its own, even when no other session works there, with <kbd>enter</kbd> taking it, then a name made from the title. The board stays on screen, with the cursor on the new session, and the card leaves the backlog; its agent gets the text once it says it is ready. Giving up on the way keeps the card. The backlog is saved with the workspace.</p>
+    </section>
+
+    <section id="timeline">
+      <h2>Timeline</h2>
+      <p><kbd>ctrl+a</kbd> <kbd>e</kbd> shows on the whole screen what happened in the workspace, and what you did, so you do not have to read the agents' consoles to find out. <kbd>e</kbd> on a session of the board opens it with the cursor on what you last did there.</p>
+      <pre> timeline  12:39 → now, 2h30m, since you were away · agents waited for you 11m
+             ┊13:00        ┊13:30      ▼ ┊14:00        ┊14:30         now
+ api  ▲  ▄▄▄▄▄▄▄▄▄████▄▄▄▄▄▄▄▄▄▄✓─────▄▄▄▄▄▄▄▄▄▄▄▄▄✓──────────────────▄▄████
+ web  ●      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄✓──────────────▄▄▄▄▄▄▄✕──────▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ docs ○    ────────────▄✓──────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────
+ now   api  ▲ waits for you 5m: “permission to use Bash: npm test”
+ now   web  ● working 50m on “use the shared Button component”
+───────────────────────────────────────────────────────────────────────────
+ 14:59 api  › typed “fix the 500 on empty orders” → worked 5m, waits for you
+ 14:19 web  › typed “use the shared Button component” → working, 50m so far
+ 13:49 web  ? asked “what does api return on empty?” from api → ✕ failed after 14m
+▸13:41 api  › sent review notes → done in 28m, 3 files
+ 13:27 api  ◆ commit a1c3f2e paginate GET /orders
+ 13:05 api  ↵ answered “Yes” · it waited 6m
+ 12:49 web  □ started the card “login form” in ~/src/app.worktrees/web → done in 29m
+ 12:40 api  › queued “add pagination to GET /orders” → done in 49m, 2 files
+── ▄ working █ waits ─ idle ✓ done ✕ failed ───────────────────────────────</pre>
+      <p>The first line says what time is shown, how long agents waited for you in it, and what else is left: notes not sent, messages queued. Then a bar for each session over that time, the heavier the more it needs you: █ waiting for you, ▄ working, ─ idle, ✓ a turn that ended, ✕ one that failed, and nothing while cicoria was closed. A <code>~</code> after a session's name says its bar is guessed from its output. Sessions that did nothing in that time are left out; those that wait for you are always shown. Under the bars, what needs you now: the sessions that wait for you, with what they ask, the one that has waited longest first, then those at work, with the message they work on. The timeline opens with the cursor there when a session waits.</p>
+      <p>Then the log of what you did, the newest first, in words: answers, with the choice and how long the agent waited for it; messages queued and sent, and review notes; what you asked one session from another; prompts you typed in an agent's pane, and turns you stopped; cards started, with their worktree. Each line that gave an agent a message says what came of it: <code>→ done in 12m, 3 files</code>, <code>→ ✕ failed after 4m</code>, <code>→ worked 5m, waits for you</code>, <code>→ sent 12:40, done in 50m</code>, <code>→ still in the queue</code>. Commits are in it too. Each line has a mark of what it is: › a message, ↵ an answer, ? a question from another session, □ a card, ◆ a commit, ✕ a failure. Under the line with the cursor, what the agent said at the end of its turn; over the bars, ▼━━ marks the time it is about, and its session's name is highlighted.</p>
+      <p>It opens on the time since you were last away: since the last pause of ten minutes without a key, or since cicoria was closed, and at least half an hour.</p>
+      <div class="table"><table>
+        <thead><tr><th>Key, on the timeline</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>j k, g G</td><td>Move; go to the first, the last line</td></tr>
+          <tr><td>a</td><td>Go to the next session that waits for you</td></tr>
+          <tr><td>enter m</td><td>Go to the session of the line; queue a message for it</td></tr>
+          <tr><td>d</td><td>Show the turn of the line: what it was for, how long it took, the files the agent changed through its tools, the commits made in it and what the agent said at its end. There <kbd>d</kbd> or <kbd>enter</kbd> opens the diff of a file since the session started, or a commit, <kbd>v</kbd> the file, and <kbd>q</kbd> comes back</td></tr>
+          <tr><td>+ - s</td><td>Show a shorter, a longer time, from half an hour to a week; the time since you were away</td></tr>
+          <tr><td>q esc</td><td>Back, as <kbd>ctrl+a</kbd> <kbd>e</kbd> is</td></tr>
+        </tbody>
+      </table></div>
+      <p>The history is kept next to the saved sessions, in <code>events.jsonl</code>, readable only by you, for 30 days. Of the messages cicoria sends and queues, the notes, the prompts you type in the pane of Claude Code, Copilot CLI or Codex CLI, which tell them, and what the agent said at the end of each turn, it keeps the first 120 characters; keys never. <code>[timeline]</code> in the settings changes that. For an agent other than Claude Code, Copilot CLI and Codex CLI, turns are guessed from its output, and a burst shorter than two seconds is not kept.</p>
     </section>
 
     <section id="web">
@@ -466,6 +506,8 @@ and add a test for it.</pre>
           <tr><td>web_address</td><td><code>"0.0.0.0:0"</code></td><td>Where the <a href="#web">web cockpit</a> listens, host and port: every address by default, and port 0 picks a free one. <code>"127.0.0.1:0"</code> keeps it to this machine</td></tr>
           <tr><td>port_base</td><td><code>20000</code></td><td>The first of the ports given to sessions, each its own range, told in <code>CICORIA_PORT</code>. <code>0</code> gives sessions no ports</td></tr>
           <tr><td>ports_per_session</td><td><code>10</code></td><td>How many ports each session has to itself, from <code>CICORIA_PORT</code> up</td></tr>
+          <tr><td>timeline.text</td><td><code>"preview"</code></td><td>What the <a href="#timeline">timeline</a>'s history keeps of the messages and prompts you send, and of what agents answer: <code>"none"</code>, <code>"preview"</code>, the first 120 characters, or <code>"full"</code></td></tr>
+          <tr><td>timeline.keep_days</td><td><code>30</code></td><td>How many days of history are kept</td></tr>
           <tr><td>worktree_dir</td><td><code>""</code></td><td>Where <a href="#worktrees">worktrees</a> go, as <code>&lt;worktree_dir&gt;/&lt;repository&gt;/&lt;session&gt;</code>: an absolute path, or one that starts with <code>~</code>. <code>""</code> puts them next to the repository</td></tr>
         </tbody>
       </table></div>
@@ -502,6 +544,7 @@ teardown = ["docker", "compose", "down"]</pre>
         <tbody>
           <tr><td>~/.config/cicoria/config.toml</td><td>Settings, under <code>$XDG_CONFIG_HOME</code> when set</td></tr>
           <tr><td>~/.local/state/cicoria/&lt;hash&gt;/sessions.json</td><td>One workspace: its directory, and each session's name, agent, directory, base, worktree, ports, conversation, notes and queue. Under <code>$XDG_STATE_HOME</code> when set. The hash is the first 8 bytes of the SHA-256 of the workspace directory</td></tr>
+          <tr><td>…/&lt;hash&gt;/events.jsonl</td><td>The history the <a href="#timeline">timeline</a> draws: what each session did and what you did, one event a line</td></tr>
           <tr><td>…/&lt;hash&gt;/lock</td><td>Held while a cicoria has the workspace open, so a second one asks before running the same agents twice</td></tr>
           <tr><td>$XDG_RUNTIME_DIR/cicoria-&lt;pid&gt;.sock</td><td>The socket hook events arrive on</td></tr>
           <tr><td>&lt;cache&gt;/cicoria/copilot</td><td>The plugin that gives Copilot CLI its hooks</td></tr>

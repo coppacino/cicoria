@@ -79,6 +79,7 @@ const (
 	modeHelp
 	modeWeb
 	modeBoard
+	modeTimeline
 )
 
 // Model is the root Bubble Tea model.
@@ -171,12 +172,32 @@ type Model struct {
 	// in the order the user gave it. board is what the board shows.
 	cards []session.Card
 	board board
+	// timeline is what the timeline shows.
+	timeline timeline
+	// commandFrom is what was on screen when the command that runs was
+	// asked for, before it went back to the workspace.
+	commandFrom mode
 
 	// web is the web cockpit, while it runs; webQR is the code of its link,
 	// and webCursor the session under the cursor of its box.
 	web       *web.Server
 	webQR     []string
 	webCursor int
+
+	// history is what happened in the workspace, for the timeline.
+	// delivered is when cicoria last gave each session a message, turnFrom
+	// when its turn started, and answered the question it was last
+	// answered for, by session ID. lastKey is when the user last pressed a
+	// key, and awayFrom when they went away before it.
+	history   *session.Ledger
+	delivered map[string]time.Time
+	turnFrom  map[string]time.Time
+	answered  map[string]time.Time
+	lastKey   time.Time
+	awayFrom  time.Time
+	// running says the run is recorded in the history: at once, or once
+	// the user agreed to open a workspace another cicoria has open.
+	running bool
 
 	// One-line interactions in the status bar.
 	prompt    *prompt
@@ -293,6 +314,7 @@ func New(cfg config.Config, dir string, dark, agreed bool) (*Model, error) {
 		return nil, err
 	}
 	self, _ := os.Executable()
+	alone := !session.InUse(dir)
 
 	m := &Model{
 		cfg:         cfg,
@@ -305,9 +327,13 @@ func New(cfg config.Config, dir string, dark, agreed bool) (*Model, error) {
 		ipc:         srv,
 		dark:        dark,
 		trees:       map[string]*ui.Tree{},
-		twice:       !agreed && session.InUse(dir),
+		twice:       !agreed && !alone,
+		delivered:   map[string]time.Time{},
+		turnFrom:    map[string]time.Time{},
+		answered:    map[string]time.Time{},
 	}
 	m.unlock = session.Lock(dir)
+	m.openHistory(alone)
 
 	st, err := session.LoadState(session.StatePath(dir))
 	if err != nil {
@@ -346,6 +372,9 @@ func New(cfg config.Config, dir string, dark, agreed bool) (*Model, error) {
 		s.Base, _ = git.Head(dir)
 		s.Uncommitted = cfg.Changes != config.ChangesSession
 		m.sessions = append(m.sessions, s)
+		if !m.twice {
+			m.record(s, session.Event{K: session.KindSessionOpen, V: s.Name})
+		}
 	}
 	for _, s := range m.sessions {
 		if s.Port == 0 {
@@ -511,6 +540,10 @@ func (m *Model) Close() error {
 	}
 	stopping.Wait()
 	m.stopWeb()
+	m.history.Record(session.Event{K: session.KindRunEnd})
+	if err := m.history.Close(); err != nil && !m.declined {
+		fmt.Fprintln(os.Stderr, "cicoria: could not write the history:", err)
+	}
 	m.unlock()
 	return m.ipc.Close()
 }
@@ -632,6 +665,7 @@ func (m *Model) refresh() tea.Cmd {
 
 // startAll launches the agents of the sessions the workspace opens with.
 func (m *Model) startAll() tea.Cmd {
+	m.beginRun()
 	m.play(ui.Bloom, "cicoria", nil)
 	var cmds []tea.Cmd
 	for _, s := range m.sessions {
@@ -643,6 +677,7 @@ func (m *Model) startAll() tea.Cmd {
 // start launches the agent of a session in the agent pane.
 func (m *Model) start(s *session.Session) tea.Cmd {
 	pane := m.pane(s)
+	m.track(s)
 	err := s.Start(agent.LaunchOpts{Self: m.self, Socket: m.ipc.Path()}, pane.w, pane.h)
 	if err != nil {
 		m.say(err.Error())
@@ -693,8 +728,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			m.confirm = &confirm{
 				question: tilde(m.dir) + " is open in another cicoria, and its agents would run twice. open it here too?",
 				yes:      m.startAll,
-				no:       func() tea.Cmd { m.declined = true; return tea.Quit },
-				always:   true,
+				// What happens then is the other cicoria's to record.
+				no:     func() tea.Cmd { m.declined, m.history = true, nil; return tea.Quit },
+				always: true,
 			}
 			return nil
 		}
@@ -755,6 +791,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.board.polling = false
 		m.board.info = msg.info
 
+	case timelineMsg:
+		m.timeline.polling = false
+		m.timeline.commits = msg.commits
+
 	case cardEditedMsg:
 		m.cardEdited(msg)
 
@@ -806,6 +846,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		if msg.err != nil {
 			m.say(msg.err.Error())
 		} else {
+			m.history.Record(session.Event{K: session.KindWorktreeGone, V: msg.path, Src: session.FromTUI})
 			m.say("removed the worktree " + tilde(msg.path))
 		}
 
@@ -854,7 +895,9 @@ func (m *Model) handleHook(ev ipc.Event) tea.Cmd {
 	}
 
 	before, conversation := s.Status, s.Conversation
-	s.Apply(u, m.watching(i), time.Now())
+	now := time.Now()
+	s.Apply(u, m.watching(i), now)
+	m.recordTurn(s, u, now)
 	if s.Conversation != conversation {
 		m.save()
 	}
@@ -900,6 +943,9 @@ func (m *Model) handleTick(now time.Time) tea.Cmd {
 	}
 	m.ticks++
 	m.publish()
+	if err := m.history.Flush(now); err != nil && m.ticks%120 == 0 {
+		m.say("could not write the history: " + err.Error())
+	}
 	// Nobody sees the panels of a terminal that is not in front: the work
 	// tree is looked at again when it comes back. The board looks at the
 	// work of every session while it is open, and so does the web cockpit,
@@ -910,6 +956,9 @@ func (m *Model) handleTick(now time.Time) tea.Cmd {
 		}
 		if m.mode == modeBoard && !m.blurred || m.web != nil {
 			ready = append(ready, m.pollBoard())
+		}
+		if m.mode == modeTimeline && !m.blurred && m.ticks%(refreshTicks*5) == 0 {
+			ready = append(ready, m.pollTimeline())
 		}
 	}
 	return tea.Batch(ready...)
@@ -1025,7 +1074,9 @@ func (m *Model) send(k tea.KeyPressMsg) {
 	if m.scrollKey(s, k.String()) {
 		return
 	}
-	s.NoteInput(time.Now())
+	now := time.Now()
+	m.recordKey(s, k.String(), now)
+	s.NoteInput(now)
 	s.Term.SendKey(uv.Key(k))
 }
 
